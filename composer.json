@@ -1,0 +1,39 @@
+{
+    "name": "abovesky/think-jwt",
+    "type": "think-extend",
+    "license": "MIT",
+    "keywords": [
+        "php",
+        "thinkphp"
+    ],
+    "description": "ThinkPHP Jwt Component",
+    "authors": [
+        {
+            "name": "abovesky",
+            "email": "abovesky@qq.com"
+        }
+    ],
+    "minimum-stability": "dev",
+    "require": {
+        "lcobucci/jwt": "^3.3",
+        "nette/php-generator": "^3.2"
+    },
+    "autoload": {
+        "psr-4": {
+            "abovesky\\": "src/"
+        }
+    },
+    "extra": {
+        "think": {
+            "services": [
+                "abovesky\\JwtService"
+            ],
+            "config": {
+                "jwt": "config/config.php"
+            }
+        },
+        "think-config": {
+            "jwt": "config/config.php"
+        }
+    }
+}
