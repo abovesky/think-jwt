@@ -36,13 +36,13 @@ class Jwt
         // 中间件自动注入用户模型
         'inject_user' => false,
         // 用户模型
-        'user' => '',
+        'user_model' => '',
     ];
 
     public function __construct(Builder $builder)
     {
         $this->builder = $builder;
-        $this->options = array_merge($this->options, config('jwt', []));
+        $this->options = array_merge($this->options, configx('jwt'));
     }
 
     /**
