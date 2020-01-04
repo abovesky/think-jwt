@@ -2,6 +2,12 @@
 
 use think\facade\Config;
 
+if ('cli' === PHP_SAPI || 'phpdbg' === PHP_SAPI && think_version() === '5.1') {
+    \think\Console::addDefaultCommands([
+        'jwt:make' => \abovesky\Command\JwtCommand::class,
+    ]);
+}
+
 if (!function_exists('think_version')) {
     /**
      * 获取TP版本号
