@@ -1,6 +1,7 @@
 <?php
 
 use think\facade\Config;
+use think\facade\Env;
 
 if ('cli' === PHP_SAPI || 'phpdbg' === PHP_SAPI && think_version() === '5.1') {
     \think\Console::addDefaultCommands([
@@ -45,5 +46,19 @@ if (!function_exists('configx')) {
         }
 
         return 0 === strpos($name, '?') ? Config::has(substr($name, 1)) : Config::get($name, $value);
+    }
+}
+
+if (!function_exists('config_pathx')) {
+    /**
+     * 获取配置目录
+     * @return string
+     */
+    function config_pathx()
+    {
+        if (think_version() === '5.1') {
+            return Env::get('config_path');
+        }
+        return config_path();
     }
 }

@@ -34,11 +34,11 @@ class JwtCommand extends Command
         $file->addComment('Jwt 配置');
         $file->setStrictTypes();
 
-        $config = config('jwt');
+        $config = configx('jwt');
         $config['signer_key'] = randomKey();
         $config = 'return '.Helpers::dump($config).';';
 
-        file_put_contents($this->app->getConfigPath().'jwt.php', $file.$config);
+        file_put_contents(config_pathx().'jwt.php', $file.$config);
         $output->writeln('> success!');
     }
 }
