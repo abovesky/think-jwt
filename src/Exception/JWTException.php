@@ -6,8 +6,6 @@ use think\exception\HttpException;
 
 class JWTException extends HttpException
 {
-    protected $message = 'An error occurred';
-
     public function __construct(string $message, $statusCode = 500, $code = 0)
     {
         parent::__construct($statusCode, $message, null, [], $code);
