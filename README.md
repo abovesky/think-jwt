@@ -28,7 +28,7 @@ $ php think jwt:make
 - `injectUser` 是否注入用户模型
 - `userModel` 用户模型
 - `hasLogged` 开启单点登录时，多点登录抛异常 code = 50401
-- `tokenAlready` Token 过期抛异常 code = 50402
+- `tokenExpired` Token 过期抛异常 code = 50402
 
 `abovesky\Exception\HasLoggedException`，
 `abovesky\Exception\TokenExpiredException`
