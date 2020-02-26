@@ -35,10 +35,10 @@ class JwtCommand extends Command
         $file->setStrictTypes();
 
         $config = configx('jwt');
-        $config['signer_key'] = randomKey();
-        $config = 'return '.Helpers::dump($config).';';
+        $config['signerKey'] = randomKey();
+        $config = 'return ' . Helpers::dump($config) . ';';
 
-        file_put_contents(config_pathx().'jwt.php', $file.$config);
+        file_put_contents(config_pathx() . 'jwt.php', $file . $config);
         $output->writeln('> success!');
     }
 }

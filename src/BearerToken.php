@@ -3,7 +3,7 @@
 namespace abovesky;
 
 use think\App;
-use abovesky\Exception\Exception;
+use abovesky\Exception\JWTException;
 
 class BearerToken
 {
@@ -19,7 +19,7 @@ class BearerToken
         $authorization = $this->request->header('authorization');
 
         if (strpos($authorization, 'Bearer ') !== 0) {
-            throw new Exception('获取Token失败.');
+            throw new JWTException('获取Token失败');
         }
 
         return substr($authorization, 7);

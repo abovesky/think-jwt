@@ -7,42 +7,47 @@ use Lcobucci\JWT\Parser;
 use Lcobucci\JWT\Signer;
 use Lcobucci\JWT\Signer\Key;
 use Lcobucci\JWT\Token;
+use think\App;
 use think\facade\Cache;
-use abovesky\Exception\Exception;
+use think\facade\Cookie;
 use abovesky\Exception\HasLoggedException;
-use abovesky\Exception\TokenAlreadyEexpired;
+use abovesky\Exception\JWTException;
+use abovesky\Exception\JWTInvalidArgumentException;
+use abovesky\Exception\TokenExpiredException;
 
 class Jwt
 {
-    private $builder;
     private $user;
     private $token;
 
-    private $options = [
-        // 单点登录
-        'sso' => true,
-        // 缓存前缀
-        'sso_cache_key' => 'jwt-auth-user',
-        // 单点登录用户唯一标识
-        'sso_key' => 'uid',
-        // 秘钥
-        'signer_key' => '',
-        // 在此时间前不可用(秒)
-        'not_before' => 0,
-        // 默认有效时间为一小时（秒）
-        'expires_at' => 3600,
-        // 默认使用sha256签名
-        'signer' => \Lcobucci\JWT\Signer\Hmac\Sha256::class,
-        // 中间件自动注入用户模型
-        'inject_user' => false,
-        // 用户模型
-        'user_model' => '',
-    ];
+    private $sso = false;
+    private $ssoCacheKey = 'jwt-auth-user';
+    private $ssoKey = 'uid';
+    private $signerKey;
+    private $notBefore = 0;
+    private $expiresAt = 3600;
+    private $signer = \Lcobucci\JWT\Signer\Hmac\Sha256::class;
 
-    public function __construct(Builder $builder)
+    private $type = 'Bearer';
+    private $injectUser = false;
+    private $userModel;
+    private $hasLogged = 50401;
+    private $tokenExpired = 50402;
+
+    public function __construct(App $app)
     {
-        $this->builder = $builder;
-        $this->options = array_merge($this->options, configx('jwt'));
+        $this->app = $app;
+        $this->builder = new Builder();
+
+        $config = $this->getConfig();
+        foreach ($config as $key => $v) {
+            $this->$key = $v;
+        }
+    }
+
+    public function getConfig()
+    {
+        return $this->app->config->get('jwt');
     }
 
     /**
@@ -50,29 +55,27 @@ class Jwt
      *
      * @param array $claims
      *
-     * @return string
+     * @return \Lcobucci\JWT\Token
      */
     public function token(array $claims)
     {
         $time = time();
-        $expires_at = (int) $this->options['expires_at'] + $time;
-        $not_before = (int) $this->options['not_before'] + $time;
-
         $uniqid = uniqid();
+
         // 单点登录
         if ($this->sso()) {
             $sso_key = $this->ssoKey();
 
             if (empty($claims[$sso_key])) {
-                throw new Exception('获取sso_key失败');
+                throw new JWTInvalidArgumentException("未设置 \$claims['{$this->ssoKey}']值", 500);
             }
             $uniqid = $claims[$sso_key];
         }
 
-        $this->builder->setIssuedAt($time)
+        $this->builder->issuedAt($time)
             ->identifiedBy($uniqid, true)
-            ->setNotBefore($not_before)
-            ->setExpiration($expires_at);
+            ->canOnlyBeUsedAfter($time + $this->notBefore())
+            ->expiresAt($time + $this->ttl());
 
         foreach ($claims as $key => $claim) {
             $this->builder->withClaim($key, $claim);
@@ -80,21 +83,11 @@ class Jwt
 
         $token = $this->builder->getToken($this->getSigner(), $this->makeKey());
 
-        if ($this->sso()) {
+        if (true === $this->sso()) {
             $this->setCacheIssuedAt($uniqid, $time);
         }
 
-        return $token->__toString();
-    }
-
-    public function ttl()
-    {
-        return $this->options['expires_at'];
-    }
-
-    public function type()
-    {
-        return 'bearer';
+        return $token;
     }
 
     /**
@@ -109,7 +102,37 @@ class Jwt
         try {
             $token = (new Parser())->parse($token);
         } catch (\InvalidArgumentException $e) {
-            throw new Exception('此 Token 解析失败');
+            throw new JWTInvalidArgumentException('此 Token 解析失败', 500);
+        }
+
+        return $token;
+    }
+
+    /**
+     * 根据$type获取请求token.
+     *
+     * @return false|mixed|string
+     */
+    public function getRequestToken()
+    {
+        switch ($this->type) {
+            case 'Bearer':
+                $authorization = request()->header('authorization');
+                $token = strpos($authorization, 'Bearer ') !== 0 ? false : substr($authorization, 7);
+                break;
+            case 'Cookie':
+                $token = Cookie::get('token');
+                break;
+            case 'Url':
+                $token = request()->param('token');
+                break;
+            default:
+                $token = request()->param('token');
+                break;
+        }
+
+        if (!$token) {
+            throw new JwtException('获取Token失败.', 500);
         }
 
         return $token;
@@ -122,26 +145,21 @@ class Jwt
      *
      * @return bool
      */
-    public function verify(string $token)
+    public function verify(string $token = '')
     {
+        // 自动获取请求token
+        if ($token == '') {
+            $token = $this->getRequestToken();
+        }
+
         // 解析Token
         $this->token = $this->parse($token);
 
         try {
-            // 验证密钥是否与创建签名的密钥匹配
-            if (false === $this->token->verify($this->getSigner(), $this->makeKey())) {
-                throw new Exception('此 Token 与 密钥不匹配');
-            }
-
-            // 是否可用
-            $exp = $this->token->getClaim('nbf');
-            if (time() < $exp) {
-                throw new Exception('此 Token 暂未可用');
-            }
-
+            $this->validateToken();
             // 是否已过期
             if ($this->token->isExpired()) {
-                throw new TokenAlreadyEexpired('Token 已过期');
+                throw new TokenExpiredException('Token 已过期', 401, $this->getTokenExpiredCode());
             }
 
             // 单点登录
@@ -152,14 +170,28 @@ class Jwt
                 // 最新Token签发时间
                 $cache_issued_at = $this->getCacheIssuedAt($jwt_id);
                 if ($issued_at != $cache_issued_at) {
-                    throw new HasLoggedException('已在其它终端登录，请重新登录');
+                    throw new HasLoggedException('已在其它终端登录，请重新登录', 401, $this->getHasLoggedCode());
                 }
             }
         } catch (\BadMethodCallException $e) {
-            throw new Exception('此 Token 未进行签名');
+            throw new JWTException('此 Token 未进行签名', 500);
         }
 
         return true;
+    }
+
+    protected function validateToken()
+    {
+        // 验证密钥是否与创建签名的密钥匹配
+        if (false === $this->token->verify($this->getSigner(), $this->makeKey())) {
+            throw new JWTException('此 Token 与 密钥不匹配', 500);
+        }
+
+        // 是否生效
+        $exp = $this->token->getClaim('nbf');
+        if (time() < $exp) {
+            throw new JWTException('此 Token 暂未生效', 500);
+        }
     }
 
     /**
@@ -170,10 +202,10 @@ class Jwt
      *
      * @return void
      */
-    protected function setCacheIssuedAt($jwt_id, $value)
+    public function setCacheIssuedAt($jwt_id, $value)
     {
-        $key = $this->options['sso_cache_key'].'-'.$jwt_id;
-        $ttl = $this->options['expires_at'] + $this->options['not_before'];
+        $key = $this->ssoCacheKey . '-' . $jwt_id;
+        $ttl = $this->ttl() + $this->notBefore();
 
         Cache::set($key, $value, $ttl);
     }
@@ -187,13 +219,13 @@ class Jwt
      */
     protected function getCacheIssuedAt($jwt_id)
     {
-        return Cache::get($this->options['sso_cache_key'].'-'.$jwt_id);
+        return Cache::get($this->ssoCacheKey . '-' . $jwt_id);
     }
 
     /**
-     * 获取Token对象
+     * 获取 Token 对象.
      *
-     * @return void
+     * @return \Lcobucci\JWT\Token
      */
     public function getToken()
     {
@@ -203,7 +235,7 @@ class Jwt
     /**
      * 刷新 Token.
      *
-     * @return void
+     * @return \Lcobucci\JWT\Token
      */
     public function refresh(Token $token)
     {
@@ -220,50 +252,15 @@ class Jwt
     }
 
     /**
-     * 是否单点登录.
-     *
-     * @return bool
-     */
-    private function sso()
-    {
-        return $this->options['sso'];
-    }
-
-    /**
-     * 获取 sso_key.
-     *
-     * @return string
-     */
-    private function ssoKey()
-    {
-        $key = $this->options['sso_key'];
-        if (empty($key)) {
-            throw new Exception('sso_key 未配置');
-        }
-
-        return $key;
-    }
-
-    /**
-     * 获取私钥.
-     *
-     * @return string|null
-     */
-    private function getKey()
-    {
-        return $this->options['signer'];
-    }
-
-    /**
      * 生成私钥.
      *
      * @return Key
      */
     private function makeKey()
     {
-        $key = $this->getKey();
+        $key = $this->getSignerKey();
         if (empty($key)) {
-            throw new Exception('私钥未配置.');
+            throw new JWTException('私钥未配置.', 500);
         }
 
         return new Key($key);
@@ -276,19 +273,29 @@ class Jwt
      */
     private function getSigner()
     {
-        $signer = $this->options['signer'];
+        $signer = $this->signer;
 
         if (empty($signer)) {
-            throw new Exception('加密方式未配置.');
+            throw new JWTInvalidArgumentException('加密方式未配置.', 500);
         }
 
         $signer = new $signer();
 
         if (!$signer instanceof Signer) {
-            throw new Exception('加密方式错误.');
+            throw new JWTException('加密方式错误.', 500);
         }
 
         return $signer;
+    }
+
+    /**
+     * 设置加密方式.
+     *
+     * @return void
+     */
+    public function setSigner($signer)
+    {
+        $this->signer = $signer;
     }
 
     /**
@@ -298,7 +305,7 @@ class Jwt
      */
     public function injectUser()
     {
-        return $this->options['inject_user'];
+        return $this->injectUser;
     }
 
     /**
@@ -308,7 +315,7 @@ class Jwt
      */
     public function userModel()
     {
-        return $this->options['user_model'];
+        return $this->userModel;
     }
 
     /**
@@ -320,9 +327,9 @@ class Jwt
     {
         $uid = $this->token->getClaim($this->ssoKey());
         if ($uid) {
-            $namespace = $this->options['user_model'];
+            $namespace = $this->userModel();
             if (empty($namespace)) {
-                throw new Exception('用户模型文件未配置.');
+                throw new JWTInvalidArgumentException('用户模型文件未配置.', 500);
             }
 
             $r = new \ReflectionClass($namespace);
@@ -333,8 +340,130 @@ class Jwt
         return $this->user;
     }
 
+    /**
+     * 获取用户uid.
+     *
+     * @return mixed
+     */
+    public function userId()
+    {
+        $uid = $this->token->getClaim($this->ssoKey());
+
+        return $uid;
+    }
+
     public function getClaims()
     {
         return $this->token->getClaims();
+    }
+
+    public function notBefore()
+    {
+        return (int) $this->notBefore;
+    }
+
+    public function setNotBefore($value)
+    {
+        $this->notBefore = (int) $value;
+    }
+
+    public function ttl()
+    {
+        return (int) $this->expiresAt;
+    }
+
+    public function setTTL(int $value)
+    {
+        $this->ttl = $value;
+    }
+
+    public function type()
+    {
+        return $this->type;
+    }
+
+    public function setType($type)
+    {
+        return $this->type = $type;
+    }
+
+    public function getTokenExpiredCode()
+    {
+        return $this->tokenExpired;
+    }
+
+    public function getHasLoggedCode()
+    {
+        return $this->hasLogged;
+    }
+
+    public function setExpiresAt($value)
+    {
+        $this->expiresAt = (int) $value;
+    }
+
+    /**
+     * 是否单点登录.
+     *
+     * @return bool
+     */
+    private function sso()
+    {
+        return $this->sso;
+    }
+
+    /**
+     * 设置单点登录.
+     *
+     * @return bool
+     */
+    public function setSso($bool)
+    {
+        return $this->sso = $bool;
+    }
+
+    /**
+     * 获取 sso_key.
+     *
+     * @return string
+     */
+    public function ssoKey()
+    {
+        $key = $this->ssoKey;
+        if (empty($key)) {
+            throw new JWTInvalidArgumentException('sso_key 未配置', 500);
+        }
+
+        return $key;
+    }
+
+    /**
+     * 设置 sso_key.
+     *
+     * @return string
+     */
+    public function setSSOKey($key)
+    {
+        $this->ssoKey = $key;
+    }
+
+    /**
+     * 获取私钥.
+     *
+     * @return string|null
+     */
+    public function getSignerKey()
+    {
+        return $this->signerKey;
+    }
+
+    /**
+     * 设置私钥.
+     *
+     * @return void
+     */
+    public function setSignerKey($key)
+    {
+        return $this->signerKey = $key;
     }
 }
