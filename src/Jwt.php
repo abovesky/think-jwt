@@ -7,7 +7,6 @@ use Lcobucci\JWT\Parser;
 use Lcobucci\JWT\Signer;
 use Lcobucci\JWT\Signer\Key;
 use Lcobucci\JWT\Token;
-use think\App;
 use think\facade\Cache;
 use think\facade\Cookie;
 use abovesky\Exception\HasLoggedException;
@@ -34,20 +33,14 @@ class Jwt
     private $hasLogged = 50401;
     private $tokenExpired = 50402;
 
-    public function __construct(App $app)
+    public function __construct()
     {
-        $this->app = $app;
         $this->builder = new Builder();
 
-        $config = $this->getConfig();
+        $config = configx('jwt');
         foreach ($config as $key => $v) {
             $this->$key = $v;
         }
-    }
-
-    public function getConfig()
-    {
-        return $this->app->config->get('jwt');
     }
 
     /**
